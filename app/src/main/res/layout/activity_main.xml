@@ -10,15 +10,32 @@
         android:orientation="vertical"
         android:padding="20dp">
 
-        <!-- Title -->
-        <TextView
-            android:layout_width="wrap_content"
+        <!-- Title row -->
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="🛡 TelegramBeacon"
-            android:textSize="24sp"
-            android:textStyle="bold"
-            android:textColor="#212121"
-            android:layout_marginBottom="20dp" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="20dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="🛡 TelegramBeacon"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:textColor="#212121" />
+
+            <Button
+                android:id="@+id/btn_help"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="❓ Help"
+                android:textSize="13sp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp" />
+        </LinearLayout>
 
         <!-- Card: credentials -->
         <LinearLayout
@@ -58,7 +75,7 @@
                 android:id="@+id/et_chat_id"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="Ваш числовой ID (от @userinfobot)"
+                android:hint="Your numeric ID (from @userinfobot)"
                 android:inputType="numberSigned"
                 android:fontFamily="monospace"
                 android:textSize="14sp" />
@@ -78,33 +95,30 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Интервал автоотчётов (минуты)"
+                android:text="Auto-report interval (minutes)"
                 android:textSize="12sp"
                 android:textColor="#757575" />
 
             <EditText
                 android:id="@+id/et_interval"
-                android:layout_width="100dp"
+                android:layout_width="80dp"
                 android:layout_height="wrap_content"
                 android:hint="5"
                 android:inputType="number"
-                android:layout_marginBottom="12dp" />
+                android:layout_marginBottom="8dp" />
 
-            <!-- Alarm switch row -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
                 android:orientation="horizontal"
                 android:gravity="center_vertical">
-
                 <TextView
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Сигнализация при движении"
+                    android:text="Motion alarm"
                     android:textSize="15sp"
                     android:textColor="#212121" />
-
                 <Switch
                     android:id="@+id/sw_alarm"
                     android:layout_width="wrap_content"
@@ -112,42 +126,36 @@
                     android:checked="true" />
             </LinearLayout>
 
-            <!-- Auto-photo switch row -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
                 android:orientation="horizontal"
                 android:gravity="center_vertical">
-
                 <TextView
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Авто-фото при тревоге"
+                    android:text="Auto-photo on alarm"
                     android:textSize="15sp"
                     android:textColor="#212121" />
-
                 <Switch
                     android:id="@+id/sw_auto_photo"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content" />
             </LinearLayout>
 
-            <!-- Autostart switch row -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
                 android:orientation="horizontal"
                 android:gravity="center_vertical">
-
                 <TextView
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Автозапуск при включении телефона"
+                    android:text="Auto-start on boot"
                     android:textSize="15sp"
                     android:textColor="#212121" />
-
                 <Switch
                     android:id="@+id/sw_autostart"
                     android:layout_width="wrap_content"
@@ -156,33 +164,43 @@
 
         </LinearLayout>
 
-        <!-- Toggle button -->
+        <!-- Start/Stop button -->
         <Button
             android:id="@+id/btn_toggle"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:text="▶  Запустить маяк"
+            android:text="▶  Start Beacon"
             android:textSize="16sp"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="10dp" />
 
         <!-- Status label -->
         <TextView
             android:id="@+id/tv_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="🔴 Остановлен"
+            android:text="🔴 Stopped"
             android:textSize="16sp"
             android:gravity="center"
-            android:padding="8dp" />
+            android:padding="8dp"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Hide icon button -->
+        <Button
+            android:id="@+id/btn_hide_icon"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Hide app icon"
+            android:textSize="13sp"
+            android:backgroundTint="#9E9E9E"
+            android:layout_marginBottom="12dp" />
 
         <!-- Hint -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="ℹ️ Chat ID: напишите /start боту @userinfobot в Telegram"
+            android:text="Chat ID: send /start to @userinfobot in Telegram"
             android:textSize="12sp"
-            android:textColor="#9E9E9E"
+            android:textColor="#BDBDBD"
             android:gravity="center" />
 
     </LinearLayout>

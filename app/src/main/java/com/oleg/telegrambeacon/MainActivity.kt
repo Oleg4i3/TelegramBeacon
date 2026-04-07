@@ -1,12 +1,12 @@
 package com.oleg.telegrambeacon
 
 import android.Manifest
-import android.content.Intent
-import android.content.SharedPreferences
+import android.content.*
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.*
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -21,16 +21,30 @@ class MainActivity : AppCompatActivity() {
     private lateinit var swAutoPhoto: Switch
     private lateinit var swAutostart: Switch
     private lateinit var btnToggle:   Button
+    private lateinit var btnHelp:     Button
+    private lateinit var btnHideIcon: Button
     private lateinit var tvStatus:    TextView
+
+    // Receiver for alarm state changes sent by BeaconService (when /on or /off via bot)
+    private val alarmReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val enabled = intent.getBooleanExtra("enabled", true)
+            swAlarm.isChecked = enabled
+        }
+    }
 
     private val REQUIRED_PERMISSIONS = buildList {
         add(Manifest.permission.CAMERA)
+        add(Manifest.permission.RECORD_AUDIO)
         add(Manifest.permission.ACCESS_FINE_LOCATION)
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
             add(Manifest.permission.POST_NOTIFICATIONS)
-        }
     }.toTypedArray()
+
+    // =========================================================================
+    // Lifecycle
+    // =========================================================================
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,11 +58,19 @@ class MainActivity : AppCompatActivity() {
         swAutoPhoto = findViewById(R.id.sw_auto_photo)
         swAutostart = findViewById(R.id.sw_autostart)
         btnToggle   = findViewById(R.id.btn_toggle)
+        btnHelp     = findViewById(R.id.btn_help)
+        btnHideIcon = findViewById(R.id.btn_hide_icon)
         tvStatus    = findViewById(R.id.tv_status)
 
         loadConfig()
         updateUI(BeaconService.isRunning)
         requestMissingPermissions()
+
+        // Show setup instructions on very first launch
+        if (prefs.getBoolean(Config.KEY_FIRST_RUN, true)) {
+            prefs.edit().putBoolean(Config.KEY_FIRST_RUN, false).apply()
+            showSetupInstructions()
+        }
 
         btnToggle.setOnClickListener {
             if (BeaconService.isRunning) {
@@ -58,10 +80,10 @@ class MainActivity : AppCompatActivity() {
                 val token  = etToken.text.toString().trim()
                 val chatId = etChatId.text.toString().trim()
                 when {
-                    token.isBlank()  -> toast("Введите Bot Token")
-                    chatId.isBlank() -> toast("Введите Chat ID")
+                    token.isBlank()  -> toast("Enter Bot Token")
+                    chatId.isBlank() -> toast("Enter Chat ID")
                     !allPermissionsGranted() -> {
-                        toast("Нужны разрешения: камера, геолокация")
+                        toast("Permissions required: camera, microphone, location")
                         requestMissingPermissions()
                     }
                     else -> {
@@ -72,14 +94,119 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+
+        btnHelp.setOnClickListener { showSetupInstructions() }
+
+        btnHideIcon.setOnClickListener { confirmHideIcon() }
+
+        // Sync alarm switch → prefs (user toggled it directly in the app)
+        swAlarm.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean(Config.KEY_ALARM_ENABLED, checked).apply()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         updateUI(BeaconService.isRunning)
+        // Sync alarm switch from prefs (may have been changed via bot command)
+        swAlarm.isChecked = prefs.getBoolean(Config.KEY_ALARM_ENABLED, true)
+
+        // Register broadcast receiver for live alarm state sync while app is open
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(alarmReceiver,
+                IntentFilter(Config.ACTION_ALARM_STATE_CHANGED),
+                RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(alarmReceiver, IntentFilter(Config.ACTION_ALARM_STATE_CHANGED))
+        }
     }
 
-    // -------------------------------------------------------------------------
+    override fun onPause() {
+        super.onPause()
+        try { unregisterReceiver(alarmReceiver) } catch (_: Exception) {}
+    }
+
+    // =========================================================================
+    // Setup instructions dialog
+    // =========================================================================
+
+    private fun showSetupInstructions() {
+        val msg = """
+<b>Step 1 — Create a bot</b>
+Open Telegram → find <b>@BotFather</b>
+Send /newbot → follow prompts → copy the <b>Token</b>
+
+<b>Step 2 — Get your Chat ID</b>
+Find <b>@userinfobot</b> in Telegram
+Send /start → copy the numeric <b>ID</b>
+
+<b>Step 3 — Configure this app</b>
+Paste Token and Chat ID below
+Set interval, enable alarm → tap Start
+
+<b>Step 4 — Keep alive</b>
+Disable battery optimization for this app
+(Settings → Apps → TelegramBeacon → Battery → Unrestricted)
+
+<b>Commands via bot:</b>
+/foto · /video · /audio · /gps · /status
+/on · /off · /interval N · /help
+
+Buttons appear automatically in the chat.
+        """.trimIndent()
+
+        AlertDialog.Builder(this)
+            .setTitle("🛡 TelegramBeacon — Setup")
+            .setMessage(android.text.Html.fromHtml(msg, android.text.Html.FROM_HTML_MODE_LEGACY))
+            .setPositiveButton("Got it", null)
+            .show()
+    }
+
+    // =========================================================================
+    // Hide icon
+    // =========================================================================
+
+    private fun confirmHideIcon() {
+        AlertDialog.Builder(this)
+            .setTitle("Hide app icon?")
+            .setMessage(
+                "The launcher icon will be removed from your home screen and app drawer.\n\n" +
+                "To open the app again:\n" +
+                "Settings → Apps → TelegramBeacon → Open\n\n" +
+                "The beacon will keep running normally."
+            )
+            .setPositiveButton("Hide") { _, _ -> setIconVisible(false) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun setIconVisible(visible: Boolean) {
+        // packageName = actual installed package (e.g. com.oleg.telegrambeacon.debug for debug builds)
+        // The alias class name is always based on the namespace, not applicationId.
+        // We must construct ComponentName explicitly to avoid disabling MainActivity by mistake.
+        val alias = ComponentName(packageName, "com.oleg.telegrambeacon.MainActivityAlias")
+        val state = if (visible)
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+        else
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+        packageManager.setComponentEnabledSetting(alias, state, PackageManager.DONT_KILL_APP)
+
+        if (!visible) {
+            toast("Icon hidden. Find app in Settings → Apps.")
+            // Update button to allow restore
+            btnHideIcon.text = "Show app icon"
+            btnHideIcon.setOnClickListener {
+                setIconVisible(true)
+                btnHideIcon.text = "Hide app icon"
+                btnHideIcon.setOnClickListener { confirmHideIcon() }
+            }
+        }
+    }
+
+    // =========================================================================
+    // Config load / save
+    // =========================================================================
 
     private fun loadConfig() {
         etToken.setText    (prefs.getString(Config.KEY_BOT_TOKEN, ""))
@@ -102,14 +229,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUI(running: Boolean) {
-        btnToggle.text = if (running) "⏹  Остановить маяк" else "▶  Запустить маяк"
-        tvStatus.text  = if (running) "🟢 Работает" else "🔴 Остановлен"
-        // Disable config fields while running
+        btnToggle.text = if (running) "⏹  Stop Beacon" else "▶  Start Beacon"
+        tvStatus.text  = if (running) "🟢 Running" else "🔴 Stopped"
         val editable = !running
-        etToken.isEnabled     = editable
-        etChatId.isEnabled    = editable
-        etInterval.isEnabled  = editable
+        etToken.isEnabled    = editable
+        etChatId.isEnabled   = editable
+        etInterval.isEnabled = editable
     }
+
+    // =========================================================================
+    // Permissions
+    // =========================================================================
 
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
@@ -119,11 +249,9 @@ class MainActivity : AppCompatActivity() {
         val missing = REQUIRED_PERMISSIONS.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        if (missing.isNotEmpty()) {
+        if (missing.isNotEmpty())
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 100)
-        }
     }
 
-    private fun toast(msg: String) =
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 }
