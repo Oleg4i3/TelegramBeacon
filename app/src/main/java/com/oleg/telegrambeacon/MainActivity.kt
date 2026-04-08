@@ -182,10 +182,8 @@ Buttons appear automatically in the chat.
     }
 
     private fun setIconVisible(visible: Boolean) {
-        // packageName = actual installed package (e.g. com.oleg.telegrambeacon.debug for debug builds)
-        // The alias class name is always based on the namespace, not applicationId.
-        // We must construct ComponentName explicitly to avoid disabling MainActivity by mistake.
-        val alias = ComponentName(packageName, "com.oleg.telegrambeacon.MainActivityAlias")
+        // namespace == applicationId (no debug suffix), so ComponentName is straightforward.
+        val alias = ComponentName(this, "$packageName.MainActivityAlias")
         val state = if (visible)
             PackageManager.COMPONENT_ENABLED_STATE_ENABLED
         else

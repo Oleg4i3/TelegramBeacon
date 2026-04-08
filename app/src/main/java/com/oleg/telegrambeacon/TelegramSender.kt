@@ -102,6 +102,11 @@ class TelegramSender(private val prefs: SharedPreferences) {
                     put(btn("🎙 Audio 10s", "/audio"))
                     put(btn("📍 GPS", "/gps"))
                 })
+                put(JSONArray().apply {             // audio duration options
+                    put(btn("🎙 30s", "/audio 30"))
+                    put(btn("🎙 60s", "/audio 60"))
+                    put(btn("🎙 120s", "/audio 120"))
+                })
                 put(JSONArray().apply {
                     if (alarmOn) {
                         put(btn("✅ Alarm ON", "/on"))
