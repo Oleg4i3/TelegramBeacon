@@ -180,14 +180,26 @@ Responses always go to the sender's chat.
         val state = if (visible) PackageManager.COMPONENT_ENABLED_STATE_ENABLED
                     else         PackageManager.COMPONENT_ENABLED_STATE_DISABLED
         packageManager.setComponentEnabledSetting(alias, state, PackageManager.DONT_KILL_APP)
+
+        // Force launchers to refresh immediately.
+        // Without this, many launchers keep showing the icon until next reboot.
+        try {
+            val intent = Intent(Intent.ACTION_PACKAGE_CHANGED).apply {
+                data = android.net.Uri.parse("package:$packageName")
+            }
+            sendBroadcast(intent)
+        } catch (_: Exception) {}
+
         if (!visible) {
-            toast("Icon hidden. Find app in Settings → Apps.")
+            toast("Icon hidden. Reopen: Settings → Apps → TelegramBeacon")
             btnHideIcon.text = "Show app icon"
             btnHideIcon.setOnClickListener {
                 setIconVisible(true)
                 btnHideIcon.text = "Hide app icon"
                 btnHideIcon.setOnClickListener { confirmHideIcon() }
             }
+        } else {
+            toast("Icon restored.")
         }
     }
 

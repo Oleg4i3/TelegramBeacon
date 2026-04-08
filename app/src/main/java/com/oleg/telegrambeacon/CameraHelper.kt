@@ -13,10 +13,16 @@ import java.io.File
 /**
  * Takes a JPEG photo without any preview surface.
  *
- * AE warm-up strategy: fire STILL_CAPTURE repeating requests for 1s so AE/AWB
- * can converge, then stop repeating and fire the final capture.
- * TEMPLATE_PREVIEW is intentionally avoided — it is incompatible with a JPEG
- * ImageReader on many front-facing cameras and causes session errors.
+ * Two-phase capture:
+ *   Phase 1 — setRepeatingRequest (STILL_CAPTURE template, NO image listener yet)
+ *             for 1s so AE/AWB converges. Images produced here are DISCARDED.
+ *   Phase 2 — stopRepeating, THEN set image listener, THEN single capture().
+ *
+ * This avoids the bug where the listener fires on a warmup frame (overexposed/
+ * front camera error) instead of the final well-exposed capture.
+ *
+ * TEMPLATE_STILL_CAPTURE is used for both phases — it is the only template
+ * compatible with a JPEG ImageReader on all camera facing directions.
  */
 class CameraHelper(private val context: Context) {
 
@@ -34,34 +40,22 @@ class CameraHelper(private val context: Context) {
             .maxByOrNull { it.width.toLong() * it.height }
             ?: map.getOutputSizes(ImageFormat.JPEG)[0]
 
-        Log.d("Camera", "Photo size: ${photoSize.width}x${photoSize.height}, cameraId=$cameraId")
+        Log.d("Camera", "Photo: ${photoSize.width}x${photoSize.height} cameraId=$cameraId")
 
         val file        = File(context.cacheDir, "beacon_${System.currentTimeMillis()}.jpg")
-        val imageReader = ImageReader.newInstance(photoSize.width, photoSize.height, ImageFormat.JPEG, 2)
+        // maxImages=1: only one image slot — forces acquireLatestImage to always give the newest
+        val imageReader = ImageReader.newInstance(photoSize.width, photoSize.height, ImageFormat.JPEG, 1)
 
         val handlerThread = HandlerThread("CameraThread").also { it.start() }
         val handler = Handler(handlerThread.looper)
 
-        var imageSaved = false
-        imageReader.setOnImageAvailableListener({ reader ->
-            if (imageSaved) return@setOnImageAvailableListener
-            imageSaved = true
-            val image = reader.acquireLatestImage() ?: run { callback(null); return@setOnImageAvailableListener }
-            try {
-                val buffer = image.planes[0].buffer
-                val bytes  = ByteArray(buffer.remaining())
-                buffer.get(bytes)
-                file.writeBytes(bytes)
-                Log.d("Camera", "Photo saved: ${bytes.size} bytes")
-                callback(file)
-            } catch (e: Exception) {
-                Log.e("Camera", "Image save failed", e); callback(null)
-            } finally {
-                image.close()
-                reader.close()
-                handlerThread.quitSafely()
-            }
-        }, handler)
+        fun fail(msg: String, camera: CameraDevice?) {
+            Log.e("Camera", msg)
+            try { imageReader.close() } catch (_: Exception) {}
+            try { camera?.close()    } catch (_: Exception) {}
+            handlerThread.quitSafely()
+            callback(null)
+        }
 
         cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
@@ -71,77 +65,80 @@ class CameraHelper(private val context: Context) {
                         object : CameraCaptureSession.StateCallback() {
                             override fun onConfigured(session: CameraCaptureSession) {
                                 try {
-                                    // Phase 1 — repeating STILL_CAPTURE to let AE/AWB converge.
-                                    // STILL_CAPTURE is the correct template for JPEG ImageReader
-                                    // and works on both rear and front cameras.
-                                    val warmupRequest = camera.createCaptureRequest(
+                                    // ── Phase 1: warmup (NO listener — discard frames) ──────
+                                    val warmup = camera.createCaptureRequest(
                                         CameraDevice.TEMPLATE_STILL_CAPTURE
                                     ).apply {
                                         addTarget(imageReader.surface)
-                                        set(CaptureRequest.CONTROL_MODE,    CaptureRequest.CONTROL_MODE_AUTO)
-                                        set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                                        set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                                        set(CaptureRequest.CONTROL_MODE,     CaptureRequest.CONTROL_MODE_AUTO)
+                                        set(CaptureRequest.CONTROL_AE_MODE,  CaptureRequest.CONTROL_AE_MODE_ON)
+                                        set(CaptureRequest.CONTROL_AF_MODE,  CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                                         set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
-                                        set(CaptureRequest.JPEG_QUALITY,    80.toByte())
-                                    }
-                                    // Suppress image delivery during warm-up by NOT setting
-                                    // the listener yet — imageSaved guard handles any leakage.
-                                    session.setRepeatingRequest(warmupRequest.build(), null, handler)
+                                        set(CaptureRequest.JPEG_QUALITY,     80.toByte())
+                                    }.build()
 
-                                    // Phase 2 — after AE settles, fire final capture
+                                    // Drain any images produced during warmup
+                                    imageReader.setOnImageAvailableListener({ reader ->
+                                        reader.acquireLatestImage()?.close()
+                                    }, handler)
+
+                                    session.setRepeatingRequest(warmup, null, handler)
+
+                                    // ── Phase 2: after 1s, stop warmup and capture ──────────
                                     handler.postDelayed({
                                         try { session.stopRepeating() } catch (_: Exception) {}
 
-                                        val stillRequest = camera.createCaptureRequest(
+                                        // NOW set the real listener that saves the image
+                                        imageReader.setOnImageAvailableListener({ reader ->
+                                            val image = reader.acquireLatestImage() ?: run {
+                                                fail("acquireLatestImage returned null", camera); return@setOnImageAvailableListener
+                                            }
+                                            try {
+                                                val buffer = image.planes[0].buffer
+                                                val bytes  = ByteArray(buffer.remaining())
+                                                buffer.get(bytes)
+                                                file.writeBytes(bytes)
+                                                Log.d("Camera", "Photo saved: ${bytes.size} bytes")
+                                                callback(file)
+                                            } catch (e: Exception) {
+                                                Log.e("Camera", "Save failed", e); callback(null)
+                                            } finally {
+                                                image.close()
+                                                imageReader.close()
+                                                camera.close()
+                                                handlerThread.quitSafely()
+                                            }
+                                        }, handler)
+
+                                        val still = camera.createCaptureRequest(
                                             CameraDevice.TEMPLATE_STILL_CAPTURE
                                         ).apply {
                                             addTarget(imageReader.surface)
-                                            set(CaptureRequest.JPEG_QUALITY,   90.toByte())
-                                            set(CaptureRequest.CONTROL_MODE,   CaptureRequest.CONTROL_MODE_AUTO)
-                                            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                                            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                                            set(CaptureRequest.JPEG_QUALITY,     92.toByte())
+                                            set(CaptureRequest.CONTROL_MODE,     CaptureRequest.CONTROL_MODE_AUTO)
+                                            set(CaptureRequest.CONTROL_AE_MODE,  CaptureRequest.CONTROL_AE_MODE_ON)
+                                            set(CaptureRequest.CONTROL_AF_MODE,  CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                                             set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
-                                        }
-                                        session.capture(stillRequest.build(),
-                                            object : CameraCaptureSession.CaptureCallback() {
-                                                override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: TotalCaptureResult) {
-                                                    camera.close()
-                                                }
-                                                override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, failure: CaptureFailure) {
-                                                    Log.e("Camera", "Capture failed: ${failure.reason}")
-                                                    if (!imageSaved) { imageSaved = true; callback(null) }
-                                                    camera.close(); handlerThread.quitSafely()
-                                                }
-                                            }, handler)
-                                    }, 1000L) // 1s warm-up — enough for front cam AE
-                                } catch (e: Exception) {
-                                    Log.e("Camera", "Request setup failed", e)
-                                    if (!imageSaved) { imageSaved = true; callback(null) }
-                                    camera.close(); handlerThread.quitSafely()
-                                }
+                                        }.build()
+
+                                        session.capture(still, object : CameraCaptureSession.CaptureCallback() {
+                                            override fun onCaptureFailed(s: CameraCaptureSession, r: CaptureRequest, f: CaptureFailure) {
+                                                fail("Capture failed: ${f.reason}", camera)
+                                            }
+                                        }, handler)
+
+                                    }, 1000L)
+
+                                } catch (e: Exception) { fail("Request setup: ${e.message}", camera) }
                             }
-                            override fun onConfigureFailed(session: CameraCaptureSession) {
-                                Log.e("Camera", "Session configure failed")
-                                if (!imageSaved) { imageSaved = true; callback(null) }
-                                camera.close(); handlerThread.quitSafely()
-                            }
+                            override fun onConfigureFailed(session: CameraCaptureSession) =
+                                fail("Session configure failed", camera)
                         }, handler
                     )
-                } catch (e: Exception) {
-                    Log.e("Camera", "createCaptureSession failed", e)
-                    if (!imageSaved) { imageSaved = true; callback(null) }
-                    camera.close(); handlerThread.quitSafely()
-                }
+                } catch (e: Exception) { fail("createCaptureSession: ${e.message}", camera) }
             }
-            override fun onDisconnected(camera: CameraDevice) {
-                if (!imageSaved) { imageSaved = true; callback(null) }
-                camera.close(); handlerThread.quitSafely()
-            }
-            override fun onError(camera: CameraDevice, error: Int) {
-                Log.e("Camera", "Camera error: $error")
-                if (!imageSaved) { imageSaved = true; callback(null) }
-                camera.close(); handlerThread.quitSafely()
-            }
+            override fun onDisconnected(camera: CameraDevice) = fail("Camera disconnected", camera)
+            override fun onError(camera: CameraDevice, error: Int)  = fail("Camera error $error", camera)
         }, handler)
     }
 

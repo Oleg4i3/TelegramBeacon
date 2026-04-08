@@ -161,7 +161,9 @@ class BeaconService : Service(), SensorEventListener {
         if (event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
         lastAccel = event.values.clone()
         if (!prefs.getBoolean(Config.KEY_ALARM_ENABLED, true)) return
-        val (x, y, z) = event.values
+        val x = event.values[0]
+        val y = event.values[1]
+        val z = event.values[2]
         val delta = abs(sqrt(x * x + y * y + z * z) - SensorManager.GRAVITY_EARTH)
         val now = System.currentTimeMillis()
         if (delta > Config.MOTION_THRESHOLD && now - lastAlertMs > Config.ALERT_COOLDOWN_MS) {
@@ -221,21 +223,72 @@ class BeaconService : Service(), SensorEventListener {
         try { locationManager.removeUpdates(locationListener) } catch (_: Exception) {}
     }
 
-    /** Start GPS temporarily, get a fix, auto-stop after timeout. */
+    @SuppressLint("MissingPermission")
     private fun requestOnDemandGps(onReady: () -> Unit) {
-        // Cancel pending auto-stop
         gpsStopJob?.let { handler.removeCallbacks(it) }
-        startLocationUpdates()
-        // Give GPS time to get a fix, then call onReady
-        handler.postDelayed({
-            onReady()
-            // Schedule GPS stop if on-demand mode
-            if (prefs.getBoolean(Config.KEY_GPS_ON_DEMAND, false)) {
-                val stopJob = Runnable { stopLocationUpdates() }
-                gpsStopJob = stopJob
-                handler.postDelayed(stopJob, Config.GPS_ON_DEMAND_TIMEOUT)
+        if (!gpsActive) startLocationUpdates()
+
+        var fixReceived = false
+
+        val oneShotListener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                if (fixReceived) return
+                fixReceived = true
+                lastLocation = location
+                Log.d(TAG, "On-demand fix: ${location.latitude},${location.longitude} acc=${location.accuracy}m")
+                // onReady runs on main thread (handler)
+                handler.post {
+                    onReady()
+                    scheduleGpsStop()
+                }
+                // Remove from background — safe because we pass handler below
+                try { locationManager.removeUpdates(this) } catch (_: Exception) {}
             }
-        }, 3000L)
+            @Deprecated("Deprecated in Java")
+            override fun onStatusChanged(p: String?, s: Int, e: Bundle?) {}
+        }
+
+        try {
+            // CRITICAL: pass `handler` (main looper) so this works when called from
+            // a background Thread (processCommands runs in Thread{}).
+            // Without a Looper argument LocationManager silently drops the registration.
+            val providers = listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)
+            var registered = false
+            providers.forEach { p ->
+                if (locationManager.isProviderEnabled(p)) {
+                    locationManager.requestLocationUpdates(p, 0L, 0f, oneShotListener, handler.looper)
+                    registered = true
+                    Log.d(TAG, "On-demand GPS registered on provider: $p")
+                }
+            }
+            if (!registered) {
+                Log.w(TAG, "No location provider available — returning cached")
+                handler.post { onReady(); scheduleGpsStop() }
+                return
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "One-shot GPS registration failed", e)
+            handler.post { onReady(); scheduleGpsStop() }
+            return
+        }
+
+        // Timeout fallback: 15s
+        handler.postDelayed({
+            if (!fixReceived) {
+                fixReceived = true
+                Log.w(TAG, "On-demand GPS timeout — using cached location")
+                try { locationManager.removeUpdates(oneShotListener) } catch (_: Exception) {}
+                onReady()
+                scheduleGpsStop()
+            }
+        }, 15_000L)
+    }
+
+    private fun scheduleGpsStop() {
+        if (!prefs.getBoolean(Config.KEY_GPS_ON_DEMAND, false)) return
+        val stopJob = Runnable { stopLocationUpdates() }
+        gpsStopJob = stopJob
+        handler.postDelayed(stopJob, Config.GPS_ON_DEMAND_TIMEOUT)
     }
 
     // =========================================================================
@@ -395,7 +448,7 @@ Alarm: ${if (alarmOn) "✅ ON" else "🔕 OFF"} | GPS: ${if (gpsOnDemand) "📍 
 
             cmd == "/gps" -> {
                 if (gpsOnDemand) {
-                    telegram.sendToChat(replyChat, "📍 Getting GPS fix…")
+                    telegram.sendToChat(replyChat, "📍 Acquiring GPS fix (up to 15s)…")
                     requestOnDemandGps {
                         telegram.sendToChat(replyChat, "📍 <b>Location</b>\n${locationText()}\n${currentTime()}")
                     }
@@ -503,7 +556,9 @@ Alarm: ${if (alarmOn) "✅ ON" else "🔕 OFF"} | GPS: ${if (gpsOnDemand) "📍 
         val interval = prefs.getInt(Config.KEY_INTERVAL_MIN, Config.DEFAULT_INTERVAL_MIN)
         val battery  = getBatteryLevel()
         val gpsOnDemand = prefs.getBoolean(Config.KEY_GPS_ON_DEMAND, false)
-        val (ax, ay, az) = lastAccel
+        val ax = lastAccel[0]
+        val ay = lastAccel[1]
+        val az = lastAccel[2]
         val sessions = authorizedSessions.size
 
         val msg = """
