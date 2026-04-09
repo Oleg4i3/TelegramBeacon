@@ -52,7 +52,6 @@ class CameraHelper(private val context: Context) {
         val afMode  = when {
             CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE in afModes -> CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
             CaptureRequest.CONTROL_AF_MODE_AUTO               in afModes -> CaptureRequest.CONTROL_AF_MODE_AUTO
-            CaptureRequest.CONTROL_AF_MODE_FIXED              in afModes -> CaptureRequest.CONTROL_AF_MODE_FIXED
             else                                                          -> CaptureRequest.CONTROL_AF_MODE_OFF
         }
         Log.d(TAG, "cameraId=$cameraId hasAF=$hasAF afMode=$afMode afModes=$afModes")
